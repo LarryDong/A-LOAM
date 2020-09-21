@@ -57,18 +57,18 @@ using std::atan2;
 using std::cos;
 using std::sin;
 
-const double scanPeriod = 0.1;
+const double scanPeriod = 0.1;      //~ 1/frequency.
 
 const int systemDelay = 0; 
 int systemInitCount = 0;
 bool systemInited = false;
 int N_SCANS = 0;
-float cloudCurvature[400000];
-int cloudSortInd[400000];
-int cloudNeighborPicked[400000];
-int cloudLabel[400000];
+float cloudCurvature[400000];       //~ each point's curvature
+int cloudSortInd[400000];           //~ 
+int cloudNeighborPicked[400000];    //~ whether a point's neighbour is picked. 1 for picked.
+int cloudLabel[400000];             //~ note a point's label. Sharp(2, 1) or Flat(-1).
 
-bool comp (int i,int j) { return (cloudCurvature[i]<cloudCurvature[j]); }
+bool comp(int i, int j) { return (cloudCurvature[i] < cloudCurvature[j]); }
 
 ros::Publisher pubLaserCloud;
 ros::Publisher pubCornerPointsSharp;
@@ -78,46 +78,40 @@ ros::Publisher pubSurfPointsLessFlat;
 ros::Publisher pubRemovePoints;
 std::vector<ros::Publisher> pubEachScan;
 
-bool PUB_EACH_LINE = false;
+bool PUB_EACH_LINE = true;
 
-double MINIMUM_RANGE = 0.1; 
+double MINIMUM_RANGE = 0.1;
 
 template <typename PointT>
-void removeClosedPointCloud(const pcl::PointCloud<PointT> &cloud_in,
-                              pcl::PointCloud<PointT> &cloud_out, float thres)
-{
-    if (&cloud_in != &cloud_out)
-    {
+void removeClosedPointCloud(const pcl::PointCloud<PointT> &cloud_in, pcl::PointCloud<PointT> &cloud_out, float thres){
+
+    if (&cloud_in != &cloud_out){
         cloud_out.header = cloud_in.header;
         cloud_out.points.resize(cloud_in.points.size());
     }
 
     size_t j = 0;
 
-    for (size_t i = 0; i < cloud_in.points.size(); ++i)
-    {
+    for (size_t i = 0; i < cloud_in.points.size(); ++i){
         if (cloud_in.points[i].x * cloud_in.points[i].x + cloud_in.points[i].y * cloud_in.points[i].y + cloud_in.points[i].z * cloud_in.points[i].z < thres * thres)
-            continue;
+            continue;           //~ avoid too near points. 
         cloud_out.points[j] = cloud_in.points[i];
         j++;
     }
-    if (j != cloud_in.points.size())
-    {
+    if (j != cloud_in.points.size())        //~ using 'resize' to delete tails.
         cloud_out.points.resize(j);
-    }
 
+    //~ parameters for pcl.
     cloud_out.height = 1;
     cloud_out.width = static_cast<uint32_t>(j);
     cloud_out.is_dense = true;
 }
 
-void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
-{
-    if (!systemInited)
-    { 
+void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg){
+
+    if (!systemInited){ 
         systemInitCount++;
-        if (systemInitCount >= systemDelay)
-        {
+        if (systemInitCount >= systemDelay){            //~ use delay to avoid laser without imu.
             systemInited = true;
         }
         else
@@ -138,127 +132,99 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
 
 
     int cloudSize = laserCloudIn.points.size();
-    float startOri = -atan2(laserCloudIn.points[0].y, laserCloudIn.points[0].x);
-    float endOri = -atan2(laserCloudIn.points[cloudSize - 1].y,
-                          laserCloudIn.points[cloudSize - 1].x) +
-                   2 * M_PI;
+    float startOri = -atan2(laserCloudIn.points[0].y, laserCloudIn.points[0].x);        //~ TODO: why a minus-sign ?
+    float endOri = -atan2(laserCloudIn.points[cloudSize - 1].y, laserCloudIn.points[cloudSize - 1].x) + 2 * M_PI;
 
     if (endOri - startOri > 3 * M_PI)
-    {
         endOri -= 2 * M_PI;
-    }
     else if (endOri - startOri < M_PI)
-    {
         endOri += 2 * M_PI;
-    }
     //printf("end Ori %f\n", endOri);
 
     bool halfPassed = false;
     int count = cloudSize;
     PointType point;
     std::vector<pcl::PointCloud<PointType>> laserCloudScans(N_SCANS);
-    for (int i = 0; i < cloudSize; i++)
-    {
+    for (int i = 0; i < cloudSize; i++){
+
         point.x = laserCloudIn.points[i].x;
         point.y = laserCloudIn.points[i].y;
         point.z = laserCloudIn.points[i].z;
 
-        float angle = atan(point.z / sqrt(point.x * point.x + point.y * point.y)) * 180 / M_PI;
+        float angle = atan(point.z / sqrt(point.x * point.x + point.y * point.y)) * 180 / M_PI;     //~ layer angle. Used to determine scanID
         int scanID = 0;
 
-        if (N_SCANS == 16)
-        {
+        if (N_SCANS == 16){
             scanID = int((angle + 15) / 2 + 0.5);
-            if (scanID > (N_SCANS - 1) || scanID < 0)
-            {
-                count--;
+            if (scanID > (N_SCANS - 1) || scanID < 0){
+                count--;            //~ invalid scan.
                 continue;
             }
         }
-        else if (N_SCANS == 32)
-        {
+        else if (N_SCANS == 32){
             scanID = int((angle + 92.0/3.0) * 3.0 / 4.0);
-            if (scanID > (N_SCANS - 1) || scanID < 0)
-            {
+            if (scanID > (N_SCANS - 1) || scanID < 0){
                 count--;
                 continue;
             }
         }
-        else if (N_SCANS == 64)
-        {   
+        else if (N_SCANS == 64){   
             if (angle >= -8.83)
                 scanID = int((2 - angle) * 3.0 + 0.5);
             else
                 scanID = N_SCANS / 2 + int((-8.83 - angle) * 2.0 + 0.5);
-
             // use [0 50]  > 50 remove outlies 
-            if (angle > 2 || angle < -24.33 || scanID > 50 || scanID < 0)
-            {
+            if (angle > 2 || angle < -24.33 || scanID > 50 || scanID < 0){
                 count--;
                 continue;
             }
         }
-        else
-        {
+        else{
             printf("wrong scan number\n");
             ROS_BREAK();
         }
         //printf("angle %f scanID %d \n", angle, scanID);
 
-        float ori = -atan2(point.y, point.x);
-        if (!halfPassed)
-        { 
+        float ori = -atan2(point.y, point.x);       //~ TODO: why a minus-sign?
+        if (!halfPassed){ 
             if (ori < startOri - M_PI / 2)
-            {
                 ori += 2 * M_PI;
-            }
             else if (ori > startOri + M_PI * 3 / 2)
-            {
                 ori -= 2 * M_PI;
-            }
 
             if (ori - startOri > M_PI)
-            {
                 halfPassed = true;
-            }
         }
-        else
-        {
+        else{
             ori += 2 * M_PI;
             if (ori < endOri - M_PI * 3 / 2)
-            {
                 ori += 2 * M_PI;
-            }
             else if (ori > endOri + M_PI / 2)
-            {
                 ori -= 2 * M_PI;
-            }
         }
 
-        float relTime = (ori - startOri) / (endOri - startOri);
-        point.intensity = scanID + scanPeriod * relTime;
+        float relTime = (ori - startOri) / (endOri - startOri);     //~ use angle to calculate time interp
+        point.intensity = scanID + scanPeriod * relTime;            //~ `intensity parameter is used for "ID.time"
         laserCloudScans[scanID].push_back(point); 
     }
     
-    cloudSize = count;
+    cloudSize = count;          //~ some invalid points (error layer/angle) have been deleted
     printf("points size %d \n", cloudSize);
 
     pcl::PointCloud<PointType>::Ptr laserCloud(new pcl::PointCloud<PointType>());
-    for (int i = 0; i < N_SCANS; i++)
-    { 
+    for (int i = 0; i < N_SCANS; i++){      //~ calculate start/end id for features extraction. From layer[i] begin id +5, to layer[i] end id  -6;
         scanStartInd[i] = laserCloud->size() + 5;
         *laserCloud += laserCloudScans[i];
         scanEndInd[i] = laserCloud->size() - 6;
     }
-
     printf("prepare time %f \n", t_prepare.toc());
 
-    for (int i = 5; i < cloudSize - 5; i++)
-    { 
+    //~ calculate curvature. value = dx^2 + dy^2 + dz^2, larger value means "corner"
+    for (int i = 5; i < cloudSize - 5; i++){
+        //~ delta_x = (x[i]-x[i-5])+(x[i]-x[i-4])...(x[i]-x[i+5]), so { -10x[i] + x[i-5:i+5] }.
         float diffX = laserCloud->points[i - 5].x + laserCloud->points[i - 4].x + laserCloud->points[i - 3].x + laserCloud->points[i - 2].x + laserCloud->points[i - 1].x - 10 * laserCloud->points[i].x + laserCloud->points[i + 1].x + laserCloud->points[i + 2].x + laserCloud->points[i + 3].x + laserCloud->points[i + 4].x + laserCloud->points[i + 5].x;
         float diffY = laserCloud->points[i - 5].y + laserCloud->points[i - 4].y + laserCloud->points[i - 3].y + laserCloud->points[i - 2].y + laserCloud->points[i - 1].y - 10 * laserCloud->points[i].y + laserCloud->points[i + 1].y + laserCloud->points[i + 2].y + laserCloud->points[i + 3].y + laserCloud->points[i + 4].y + laserCloud->points[i + 5].y;
         float diffZ = laserCloud->points[i - 5].z + laserCloud->points[i - 4].z + laserCloud->points[i - 3].z + laserCloud->points[i - 2].z + laserCloud->points[i - 1].z - 10 * laserCloud->points[i].z + laserCloud->points[i + 1].z + laserCloud->points[i + 2].z + laserCloud->points[i + 3].z + laserCloud->points[i + 4].z + laserCloud->points[i + 5].z;
-
         cloudCurvature[i] = diffX * diffX + diffY * diffY + diffZ * diffZ;
         cloudSortInd[i] = i;
         cloudNeighborPicked[i] = 0;
@@ -268,51 +234,42 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
 
     TicToc t_pts;
 
-    pcl::PointCloud<PointType> cornerPointsSharp;
-    pcl::PointCloud<PointType> cornerPointsLessSharp;
+    pcl::PointCloud<PointType> cornerPointsSharp;           //~ 2 for Sharp. Using `cloudCurvature
+    pcl::PointCloud<PointType> cornerPointsLessSharp;       //~ 20 for lessSharp
     pcl::PointCloud<PointType> surfPointsFlat;
     pcl::PointCloud<PointType> surfPointsLessFlat;
 
     float t_q_sort = 0;
-    for (int i = 0; i < N_SCANS; i++)
-    {
-        if( scanEndInd[i] - scanStartInd[i] < 6)
+    for (int i = 0; i < N_SCANS; i++){
+        if (scanEndInd[i] - scanStartInd[i] < 6)        //~ a scan is too short
             continue;
         pcl::PointCloud<PointType>::Ptr surfPointsLessFlatScan(new pcl::PointCloud<PointType>);
-        for (int j = 0; j < 6; j++)
-        {
+        
+        //~ extract(distribute) features in 6 sectors of each scan. 
+        for (int j = 0; j < 6; j++){
             int sp = scanStartInd[i] + (scanEndInd[i] - scanStartInd[i]) * j / 6; 
             int ep = scanStartInd[i] + (scanEndInd[i] - scanStartInd[i]) * (j + 1) / 6 - 1;
 
             TicToc t_tmp;
-            std::sort (cloudSortInd + sp, cloudSortInd + ep + 1, comp);
+            std::sort (cloudSortInd + sp, cloudSortInd + ep + 1, comp);     //~ (a segment of) indice are sorted by curvature.
             t_q_sort += t_tmp.toc();
 
             int largestPickedNum = 0;
-            for (int k = ep; k >= sp; k--)
-            {
-                int ind = cloudSortInd[k]; 
-
-                if (cloudNeighborPicked[ind] == 0 &&
-                    cloudCurvature[ind] > 0.1)
-                {
-
+            for (int k = ep; k >= sp; k--){
+                int ind = cloudSortInd[k];              //~ extract real index for curvature, from largest to smallest.
+                if (cloudNeighborPicked[ind] == 0 && cloudCurvature[ind] > 0.1){        //~ no points around not picked, and curvature is large enough.
                     largestPickedNum++;
-                    if (largestPickedNum <= 2)
-                    {                        
+                    if (largestPickedNum <= 2){         //~ the first 2 must be largest 2.
                         cloudLabel[ind] = 2;
                         cornerPointsSharp.push_back(laserCloud->points[ind]);
                         cornerPointsLessSharp.push_back(laserCloud->points[ind]);
                     }
-                    else if (largestPickedNum <= 20)
-                    {                        
+                    else if (largestPickedNum <= 20){                        
                         cloudLabel[ind] = 1; 
                         cornerPointsLessSharp.push_back(laserCloud->points[ind]);
                     }
                     else
-                    {
                         break;
-                    }
 
                     cloudNeighborPicked[ind] = 1; 
 
@@ -458,19 +415,16 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         ROS_WARN("scan registration process over 100ms");
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv){
+
     ros::init(argc, argv, "scanRegistration");
     ros::NodeHandle nh;
 
     nh.param<int>("scan_line", N_SCANS, 16);
-
     nh.param<double>("minimum_range", MINIMUM_RANGE, 0.1);
 
-    printf("scan line number %d \n", N_SCANS);
-
-    if(N_SCANS != 16 && N_SCANS != 32 && N_SCANS != 64)
-    {
+    // printf("scan line number %d \n", N_SCANS);
+    if(N_SCANS != 16 && N_SCANS != 32 && N_SCANS != 64){
         printf("only support velodyne with 16, 32 or 64 scan line!");
         return 0;
     }
@@ -478,26 +432,19 @@ int main(int argc, char **argv)
     ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_points", 100, laserCloudHandler);
 
     pubLaserCloud = nh.advertise<sensor_msgs::PointCloud2>("/velodyne_cloud_2", 100);
-
     pubCornerPointsSharp = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_sharp", 100);
-
     pubCornerPointsLessSharp = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_less_sharp", 100);
-
     pubSurfPointsFlat = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_flat", 100);
-
     pubSurfPointsLessFlat = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_less_flat", 100);
+    pubRemovePoints = nh.advertise<sensor_msgs::PointCloud2>("/laser_remove_points", 100);      //~ not subscribed by anyone.
 
-    pubRemovePoints = nh.advertise<sensor_msgs::PointCloud2>("/laser_remove_points", 100);
-
-    if(PUB_EACH_LINE)
-    {
-        for(int i = 0; i < N_SCANS; i++)
-        {
+    if(PUB_EACH_LINE){              //~ publish every scan lines. From 1-16/32/64
+        for(int i = 0; i < N_SCANS; i++){
             ros::Publisher tmp = nh.advertise<sensor_msgs::PointCloud2>("/laser_scanid_" + std::to_string(i), 100);
             pubEachScan.push_back(tmp);
         }
     }
     ros::spin();
-
     return 0;
 }
+
