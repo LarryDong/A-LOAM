@@ -40,18 +40,18 @@
 #include <string>
 #include "aloam_velodyne/common.h"
 #include "aloam_velodyne/tic_toc.h"
-#include <nav_msgs/Odometry.h>
-#include <opencv/cv.h>
-#include <pcl_conversions/pcl_conversions.h>
+// #include <nav_msgs/Odometry.h>
+// #include <opencv/cv.h>
+#include <pcl_conversions/pcl_conversions.h>    //~ `toROSMsg
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
-#include <pcl/kdtree/kdtree_flann.h>
+// #include <pcl/kdtree/kdtree_flann.h>
 #include <ros/ros.h>
-#include <sensor_msgs/Imu.h>
+// #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud2.h>
-#include <tf/transform_datatypes.h>
-#include <tf/transform_broadcaster.h>
+// #include <tf/transform_datatypes.h>
+// #include <tf/transform_broadcaster.h>
 
 using std::atan2;
 using std::cos;
@@ -70,8 +70,8 @@ int cloudLabel[400000];             //~ note a point's label. Sharp(2, 1) or Fla
 
 bool comp(int i, int j) { return (cloudCurvature[i] < cloudCurvature[j]); }
 
-ros::Publisher pubLaserCloud;
-ros::Publisher pubCornerPointsSharp;
+ros::Publisher pubLaserCloud;               //~ origin pointCloud from Lidar
+ros::Publisher pubCornerPointsSharp;        
 ros::Publisher pubCornerPointsLessSharp;
 ros::Publisher pubSurfPointsFlat;
 ros::Publisher pubSurfPointsLessFlat;
@@ -254,6 +254,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg){
             std::sort (cloudSortInd + sp, cloudSortInd + ep + 1, comp);     //~ (a segment of) indice are sorted by curvature.
             t_q_sort += t_tmp.toc();
 
+            //~ extract sharp points. 2 Sharp points (labeled:1) and 20 less sharp points (labeled:1)
             int largestPickedNum = 0;
             for (int k = ep; k >= sp; k--){
                 int ind = cloudSortInd[k];              //~ extract real index for curvature, from largest to smallest.
@@ -273,100 +274,74 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg){
 
                     cloudNeighborPicked[ind] = 1; 
 
-                    for (int l = 1; l <= 5; l++)
-                    {
+                    for (int l = 1; l <= 5; l++){
                         float diffX = laserCloud->points[ind + l].x - laserCloud->points[ind + l - 1].x;
                         float diffY = laserCloud->points[ind + l].y - laserCloud->points[ind + l - 1].y;
                         float diffZ = laserCloud->points[ind + l].z - laserCloud->points[ind + l - 1].z;
-                        if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05)
-                        {
+                        if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05)       //~ if points are near, labeled to avoid select again.
                             break;
-                        }
-
                         cloudNeighborPicked[ind + l] = 1;
                     }
-                    for (int l = -1; l >= -5; l--)
-                    {
+                    for (int l = -1; l >= -5; l--){
                         float diffX = laserCloud->points[ind + l].x - laserCloud->points[ind + l + 1].x;
                         float diffY = laserCloud->points[ind + l].y - laserCloud->points[ind + l + 1].y;
                         float diffZ = laserCloud->points[ind + l].z - laserCloud->points[ind + l + 1].z;
                         if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05)
-                        {
                             break;
-                        }
-
                         cloudNeighborPicked[ind + l] = 1;
                     }
                 }
             }
 
+            //~ extract 4 flat points (labeled:-1)
             int smallestPickedNum = 0;
-            for (int k = sp; k <= ep; k++)
-            {
+            for (int k = sp; k <= ep; k++){
                 int ind = cloudSortInd[k];
-
-                if (cloudNeighborPicked[ind] == 0 &&
-                    cloudCurvature[ind] < 0.1)
-                {
-
+                if (cloudNeighborPicked[ind] == 0 && cloudCurvature[ind] < 0.1){
                     cloudLabel[ind] = -1; 
                     surfPointsFlat.push_back(laserCloud->points[ind]);
-
                     smallestPickedNum++;
                     if (smallestPickedNum >= 4)
-                    { 
                         break;
-                    }
 
                     cloudNeighborPicked[ind] = 1;
-                    for (int l = 1; l <= 5; l++)
-                    { 
+                    for (int l = 1; l <= 5; l++){ 
                         float diffX = laserCloud->points[ind + l].x - laserCloud->points[ind + l - 1].x;
                         float diffY = laserCloud->points[ind + l].y - laserCloud->points[ind + l - 1].y;
                         float diffZ = laserCloud->points[ind + l].z - laserCloud->points[ind + l - 1].z;
                         if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05)
-                        {
                             break;
-                        }
-
                         cloudNeighborPicked[ind + l] = 1;
                     }
-                    for (int l = -1; l >= -5; l--)
-                    {
+                    for (int l = -1; l >= -5; l--){
                         float diffX = laserCloud->points[ind + l].x - laserCloud->points[ind + l + 1].x;
                         float diffY = laserCloud->points[ind + l].y - laserCloud->points[ind + l + 1].y;
                         float diffZ = laserCloud->points[ind + l].z - laserCloud->points[ind + l + 1].z;
                         if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05)
-                        {
                             break;
-                        }
-
                         cloudNeighborPicked[ind + l] = 1;
                     }
                 }
             }
 
-            for (int k = sp; k <= ep; k++)
-            {
-                if (cloudLabel[k] <= 0)
-                {
+            for (int k = sp; k <= ep; k++){
+                if (cloudLabel[k] <= 0)             //~ attention that "<=0" include all unlabeled points.
                     surfPointsLessFlatScan->push_back(laserCloud->points[k]);
-                }
             }
         }
 
-        pcl::PointCloud<PointType> surfPointsLessFlatScanDS;
+        pcl::PointCloud<PointType> surfPointsLessFlatScanDS;        //~ DS: down size filter.
         pcl::VoxelGrid<PointType> downSizeFilter;
         downSizeFilter.setInputCloud(surfPointsLessFlatScan);
         downSizeFilter.setLeafSize(0.2, 0.2, 0.2);
         downSizeFilter.filter(surfPointsLessFlatScanDS);
 
-        surfPointsLessFlat += surfPointsLessFlatScanDS;
+        surfPointsLessFlat += surfPointsLessFlatScanDS;             //~ construct the full pointCloud.
     }
     printf("sort q time %f \n", t_q_sort);
     printf("seperate points time %f \n", t_pts.toc());
 
-
+    //~ publish related topics
     sensor_msgs::PointCloud2 laserCloudOutMsg;
     pcl::toROSMsg(*laserCloud, laserCloudOutMsg);
     laserCloudOutMsg.header.stamp = laserCloudMsg->header.stamp;
@@ -398,10 +373,8 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg){
     pubSurfPointsLessFlat.publish(surfPointsLessFlat2);
 
     // pub each scam
-    if(PUB_EACH_LINE)
-    {
-        for(int i = 0; i< N_SCANS; i++)
-        {
+    if(PUB_EACH_LINE){
+        for(int i = 0; i< N_SCANS; i++){
             sensor_msgs::PointCloud2 scanMsg;
             pcl::toROSMsg(laserCloudScans[i], scanMsg);
             scanMsg.header.stamp = laserCloudMsg->header.stamp;
