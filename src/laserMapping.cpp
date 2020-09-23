@@ -36,7 +36,6 @@
 
 #include <math.h>
 #include <vector>
-#include <aloam_velodyne/common.h>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -65,10 +64,10 @@
 
 int frameCount = 0;
 
-double timeLaserCloudCornerLast = 0;
-double timeLaserCloudSurfLast = 0;
-double timeLaserCloudFullRes = 0;
-double timeLaserOdometry = 0;
+// double timeLaserCloudCornerLast = 0;
+// double timeLaserCloudSurfLast = 0;
+// double timeLaserCloudFullRes = 0;
+// double timeLaserOdometry = 0;
 
 
 int laserCloudCenWidth = 10;
@@ -107,6 +106,7 @@ pcl::PointCloud<PointType>::Ptr laserCloudSurfArray[laserCloudNum];
 pcl::KdTreeFLANN<PointType>::Ptr kdtreeCornerFromMap(new pcl::KdTreeFLANN<PointType>());
 pcl::KdTreeFLANN<PointType>::Ptr kdtreeSurfFromMap(new pcl::KdTreeFLANN<PointType>());
 
+
 double parameters[7] = {0, 0, 0, 1, 0, 0, 0};
 Eigen::Map<Eigen::Quaterniond> q_w_curr(parameters);
 Eigen::Map<Eigen::Vector3d> t_w_curr(parameters + 4);
@@ -139,8 +139,7 @@ ros::Publisher pubLaserCloudSurround, pubLaserCloudMap, pubLaserCloudFullRes, pu
 nav_msgs::Path laserAfterMappedPath;
 
 // set initial guess
-void transformAssociateToMap()
-{
+void transformAssociateToMap(){
 	q_w_curr = q_wmap_wodom * q_wodom_curr;
 	t_w_curr = q_wmap_wodom * t_wodom_curr + t_wmap_wodom;
 }
@@ -172,34 +171,27 @@ void pointAssociateTobeMapped(PointType const *const pi, PointType *const po)
 	po->intensity = pi->intensity;
 }
 
-void laserCloudCornerLastHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudCornerLast2)
-{
+void laserCloudCornerLastHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudCornerLast2){
 	mBuf.lock();
 	cornerLastBuf.push(laserCloudCornerLast2);
 	mBuf.unlock();
 }
-
-void laserCloudSurfLastHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudSurfLast2)
-{
+void laserCloudSurfLastHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudSurfLast2){
 	mBuf.lock();
 	surfLastBuf.push(laserCloudSurfLast2);
 	mBuf.unlock();
 }
-
-void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudFullRes2)
-{
+void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudFullRes2){
 	mBuf.lock();
 	fullResBuf.push(laserCloudFullRes2);
 	mBuf.unlock();
 }
 
 //receive odomtry
-void laserOdometryHandler(const nav_msgs::Odometry::ConstPtr &laserOdometry)
-{
+void laserOdometryHandler(const nav_msgs::Odometry::ConstPtr &laserOdometry){
 	mBuf.lock();
 	odometryBuf.push(laserOdometry);
 	mBuf.unlock();
-
 	// high frequence publish
 	Eigen::Quaterniond q_wodom_curr;
 	Eigen::Vector3d t_wodom_curr;
@@ -211,7 +203,7 @@ void laserOdometryHandler(const nav_msgs::Odometry::ConstPtr &laserOdometry)
 	t_wodom_curr.y() = laserOdometry->pose.pose.position.y;
 	t_wodom_curr.z() = laserOdometry->pose.pose.position.z;
 
-	Eigen::Quaterniond q_w_curr = q_wmap_wodom * q_wodom_curr;
+	Eigen::Quaterniond q_w_curr = q_wmap_wodom * q_wodom_curr;          //~ TODO: in laserOdomety, `q_wodom_curr is from current to world.
 	Eigen::Vector3d t_w_curr = q_wmap_wodom * t_wodom_curr + t_wmap_wodom; 
 
 	nav_msgs::Odometry odomAftMapped;
@@ -228,54 +220,46 @@ void laserOdometryHandler(const nav_msgs::Odometry::ConstPtr &laserOdometry)
 	pubOdomAftMappedHighFrec.publish(odomAftMapped);
 }
 
-void process()
-{
-	while(1)
-	{
-		while (!cornerLastBuf.empty() && !surfLastBuf.empty() &&
-			!fullResBuf.empty() && !odometryBuf.empty())
-		{
+//~ main program.
+void process(){
+	while(1){
+        while (!cornerLastBuf.empty() && !surfLastBuf.empty() && !fullResBuf.empty() && !odometryBuf.empty()){
 			mBuf.lock();
+
+            //~ odom, surf, and fullCloud should have the same ts with corner.
 			while (!odometryBuf.empty() && odometryBuf.front()->header.stamp.toSec() < cornerLastBuf.front()->header.stamp.toSec())
 				odometryBuf.pop();
-			if (odometryBuf.empty())
-			{
+			if (odometryBuf.empty()){
 				mBuf.unlock();
 				break;
 			}
-
 			while (!surfLastBuf.empty() && surfLastBuf.front()->header.stamp.toSec() < cornerLastBuf.front()->header.stamp.toSec())
 				surfLastBuf.pop();
-			if (surfLastBuf.empty())
-			{
+			if (surfLastBuf.empty()){
 				mBuf.unlock();
 				break;
 			}
-
 			while (!fullResBuf.empty() && fullResBuf.front()->header.stamp.toSec() < cornerLastBuf.front()->header.stamp.toSec())
 				fullResBuf.pop();
-			if (fullResBuf.empty())
-			{
+			if (fullResBuf.empty()){
 				mBuf.unlock();
 				break;
 			}
 
-			timeLaserCloudCornerLast = cornerLastBuf.front()->header.stamp.toSec();
-			timeLaserCloudSurfLast = surfLastBuf.front()->header.stamp.toSec();
-			timeLaserCloudFullRes = fullResBuf.front()->header.stamp.toSec();
-			timeLaserOdometry = odometryBuf.front()->header.stamp.toSec();
+			double timeLaserCloudCornerLast = cornerLastBuf.front()->header.stamp.toSec();
+			double timeLaserCloudSurfLast = surfLastBuf.front()->header.stamp.toSec();
+			double timeLaserCloudFullRes = fullResBuf.front()->header.stamp.toSec();
+			double timeLaserOdometry = odometryBuf.front()->header.stamp.toSec();
 
-			if (timeLaserCloudCornerLast != timeLaserOdometry ||
-				timeLaserCloudSurfLast != timeLaserOdometry ||
-				timeLaserCloudFullRes != timeLaserOdometry)
-			{
-				printf("time corner %f surf %f full %f odom %f \n", timeLaserCloudCornerLast, timeLaserCloudSurfLast, timeLaserCloudFullRes, timeLaserOdometry);
+            if (timeLaserCloudCornerLast != timeLaserOdometry || timeLaserCloudSurfLast != timeLaserOdometry || timeLaserCloudFullRes != timeLaserOdometry){
+                printf("time corner %f surf %f full %f odom %f \n", timeLaserCloudCornerLast, timeLaserCloudSurfLast, timeLaserCloudFullRes, timeLaserOdometry);
 				printf("unsync messeage!");
 				mBuf.unlock();
 				break;
-			}
+            }
 
-			laserCloudCornerLast->clear();
+            //~ load data from buffer.
+            laserCloudCornerLast->clear();
 			pcl::fromROSMsg(*cornerLastBuf.front(), *laserCloudCornerLast);
 			cornerLastBuf.pop();
 
@@ -296,8 +280,7 @@ void process()
 			t_wodom_curr.z() = odometryBuf.front()->pose.pose.position.z;
 			odometryBuf.pop();
 
-			while(!cornerLastBuf.empty())
-			{
+			while(!cornerLastBuf.empty()){      //~ all buffer are aligned to cornerLastBuf, drop all buf if mapping is lower.
 				cornerLastBuf.pop();
 				printf("drop lidar frame in mapping for real time performance \n");
 			}
@@ -305,9 +288,9 @@ void process()
 			mBuf.unlock();
 
 			TicToc t_whole;
-
 			transformAssociateToMap();
 
+            //~ TODO: construct sub-map
 			TicToc t_shift;
 			int centerCubeI = int((t_w_curr.x() + 25.0) / 50.0) + laserCloudCenWidth;
 			int centerCubeJ = int((t_w_curr.y() + 25.0) / 50.0) + laserCloudCenHeight;
@@ -320,64 +303,42 @@ void process()
 			if (t_w_curr.z() + 25.0 < 0)
 				centerCubeK--;
 
-			while (centerCubeI < 3)
-			{
-				for (int j = 0; j < laserCloudHeight; j++)
-				{
-					for (int k = 0; k < laserCloudDepth; k++)
-					{ 
+			while (centerCubeI < 3){
+				for (int j = 0; j < laserCloudHeight; j++){
+					for (int k = 0; k < laserCloudDepth; k++){ 
 						int i = laserCloudWidth - 1;
-						pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
-							laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k]; 
-						pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
-							laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-						for (; i >= 1; i--)
-						{
-							laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-								laserCloudCornerArray[i - 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-							laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-								laserCloudSurfArray[i - 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-						}
-						laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-							laserCloudCubeCornerPointer;
-						laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-							laserCloudCubeSurfPointer;
-						laserCloudCubeCornerPointer->clear();
+                        pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer = laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                        pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer = laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                        for (; i >= 1; i--){
+                            laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] = laserCloudCornerArray[i - 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                            laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] = laserCloudSurfArray[i - 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                        }
+                        laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] = laserCloudCubeCornerPointer;
+                        laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] = laserCloudCubeSurfPointer;
+                        laserCloudCubeCornerPointer->clear();
 						laserCloudCubeSurfPointer->clear();
 					}
 				}
-
 				centerCubeI++;
 				laserCloudCenWidth++;
 			}
 
-			while (centerCubeI >= laserCloudWidth - 3)
-			{ 
-				for (int j = 0; j < laserCloudHeight; j++)
-				{
-					for (int k = 0; k < laserCloudDepth; k++)
-					{
+			while (centerCubeI >= laserCloudWidth - 3){ 
+				for (int j = 0; j < laserCloudHeight; j++){
+					for (int k = 0; k < laserCloudDepth; k++){
 						int i = 0;
-						pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer =
-							laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-						pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer =
-							laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-						for (; i < laserCloudWidth - 1; i++)
-						{
-							laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-								laserCloudCornerArray[i + 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-							laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-								laserCloudSurfArray[i + 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
-						}
-						laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-							laserCloudCubeCornerPointer;
-						laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] =
-							laserCloudCubeSurfPointer;
-						laserCloudCubeCornerPointer->clear();
+                        pcl::PointCloud<PointType>::Ptr laserCloudCubeCornerPointer = laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                        pcl::PointCloud<PointType>::Ptr laserCloudCubeSurfPointer = laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                        for (; i < laserCloudWidth - 1; i++){
+                            laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] = laserCloudCornerArray[i + 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                            laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] = laserCloudSurfArray[i + 1 + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k];
+                        }
+                        laserCloudCornerArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] = laserCloudCubeCornerPointer;
+                        laserCloudSurfArray[i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k] = laserCloudCubeSurfPointer;
+                        laserCloudCubeCornerPointer->clear();
 						laserCloudCubeSurfPointer->clear();
 					}
 				}
-
 				centerCubeI--;
 				laserCloudCenWidth--;
 			}
@@ -892,8 +853,8 @@ void process()
 	}
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv){
+
 	ros::init(argc, argv, "laserMapping");
 	ros::NodeHandle nh;
 
@@ -906,34 +867,23 @@ int main(int argc, char **argv)
 	downSizeFilterSurf.setLeafSize(planeRes, planeRes, planeRes);
 
 	ros::Subscriber subLaserCloudCornerLast = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_corner_last", 100, laserCloudCornerLastHandler);
-
 	ros::Subscriber subLaserCloudSurfLast = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_surf_last", 100, laserCloudSurfLastHandler);
-
 	ros::Subscriber subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/laser_odom_to_init", 100, laserOdometryHandler);
-
 	ros::Subscriber subLaserCloudFullRes = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_cloud_3", 100, laserCloudFullResHandler);
 
 	pubLaserCloudSurround = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_surround", 100);
-
 	pubLaserCloudMap = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_map", 100);
-
 	pubLaserCloudFullRes = nh.advertise<sensor_msgs::PointCloud2>("/velodyne_cloud_registered", 100);
-
 	pubOdomAftMapped = nh.advertise<nav_msgs::Odometry>("/aft_mapped_to_init", 100);
-
 	pubOdomAftMappedHighFrec = nh.advertise<nav_msgs::Odometry>("/aft_mapped_to_init_high_frec", 100);
-
 	pubLaserAfterMappedPath = nh.advertise<nav_msgs::Path>("/aft_mapped_path", 100);
 
-	for (int i = 0; i < laserCloudNum; i++)
-	{
+	for (int i = 0; i < laserCloudNum; i++){
 		laserCloudCornerArray[i].reset(new pcl::PointCloud<PointType>());
 		laserCloudSurfArray[i].reset(new pcl::PointCloud<PointType>());
 	}
 
 	std::thread mapping_process{process};
-
 	ros::spin();
-
 	return 0;
 }

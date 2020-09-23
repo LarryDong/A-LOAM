@@ -78,7 +78,7 @@ ros::Publisher pubSurfPointsLessFlat;
 ros::Publisher pubRemovePoints;
 std::vector<ros::Publisher> pubEachScan;
 
-bool PUB_EACH_LINE = true;
+bool PUB_EACH_LINE = false;
 
 double MINIMUM_RANGE = 0.1;
 
