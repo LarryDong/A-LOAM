@@ -56,16 +56,16 @@
 #include "aloam_velodyne/tic_toc.h"
 #include "lidarFactor.hpp"
 
-#define DISTORTION 0
+#define DISTORTION 0 // 表示激光点云是否已经被去过畸变
 
 
 int corner_correspondence = 0, plane_correspondence = 0;
 
-constexpr double SCAN_PERIOD = 0.1;
-constexpr double DISTANCE_SQ_THRESHOLD = 25;
-constexpr double NEARBY_SCAN = 2.5;
+constexpr double SCAN_PERIOD = 0.1; // 激光雷达的频率，0.1s
+constexpr double DISTANCE_SQ_THRESHOLD = 25; // 找最近点的距离平方的阈值
+constexpr double NEARBY_SCAN = 2.5; // 找点时最远激光层的阈值
 
-int skipFrameNum = 5;
+int skipFrameNum = 5; // 通过launch文件进行设置，控制输出的频率
 bool systemInited = false;
 
 double timeCornerPointsSharp = 0;
@@ -90,15 +90,15 @@ int laserCloudCornerLastNum = 0;
 int laserCloudSurfLastNum = 0;
 
 // Transformation from current frame to world frame
-Eigen::Quaterniond q_w_curr(1, 0, 0, 0);
+Eigen::Quaterniond q_w_curr(1, 0, 0, 0); // 激光雷达在世界坐标系中的位姿，用四元数来表示方向
 Eigen::Vector3d t_w_curr(0, 0, 0);
 
 // q_curr_last(x, y, z, w), t_curr_last
-double para_q[4] = {0, 0, 0, 1};
-double para_t[3] = {0, 0, 0};
+double para_q[4] = {0, 0, 0, 1}; // ceres用来优化时的数组，四元数
+double para_t[3] = {0, 0, 0}; // 平移
 
-Eigen::Map<Eigen::Quaterniond> q_last_curr(para_q); //~ Eigen::Map, reuse (the same) memory to avoid copy. eigen with raw c/c++.
-Eigen::Map<Eigen::Vector3d> t_last_curr(para_t);    //~ so after each ceres optimization, q_last_curr and t_last_curr are changed with para_q and para_t.
+Eigen::Map<Eigen::Quaterniond> q_last_curr(para_q);
+Eigen::Map<Eigen::Vector3d> t_last_curr(para_t);
 
 std::queue<sensor_msgs::PointCloud2ConstPtr> cornerSharpBuf;
 std::queue<sensor_msgs::PointCloud2ConstPtr> cornerLessSharpBuf;
@@ -107,18 +107,22 @@ std::queue<sensor_msgs::PointCloud2ConstPtr> surfLessFlatBuf;
 std::queue<sensor_msgs::PointCloud2ConstPtr> fullPointsBuf;
 std::mutex mBuf;
 
-// undistort lidar point
-void TransformToStart(PointType const *const pi, PointType *const po){      //~ pi: point input; po: point output.
+// undistort lidar point 将激光点转换到这一帧起始时刻的坐标系下（也相当于是上一帧的末尾）
+void TransformToStart(PointType const *const pi, PointType *const po) // 根据时间进行插值，得到去畸变的点云位置
+{
+    //interpolation ratio
     double s;
     if (DISTORTION)
-        s = (pi->intensity - int(pi->intensity)) / SCAN_PERIOD;
+        s = (pi->intensity - int(pi->intensity)) / SCAN_PERIOD; // 根据在这一帧中的时间（intensity的小数部分）进行位姿转换（去畸变）
     else
         s = 1.0;
-    //~ linear interp. s=1 means no distortion, use current2last quart for rotation(q)/translation(t)
+    //s = 1;
+    // 通过线性插值获得这一时刻激光雷达相对上一帧的位姿
     Eigen::Quaterniond q_point_last = Eigen::Quaterniond::Identity().slerp(s, q_last_curr);
     Eigen::Vector3d t_point_last = s * t_last_curr;
     Eigen::Vector3d point(pi->x, pi->y, pi->z);
-    Eigen::Vector3d un_point = q_point_last * point + t_point_last;
+    Eigen::Vector3d un_point = q_point_last * point + t_point_last; // 将激光点通过这一时刻的位姿转换到这一帧的起始坐标系下，去畸变
+
     po->x = un_point.x();
     po->y = un_point.y();
     po->z = un_point.z();
@@ -131,10 +135,10 @@ void TransformToEnd(PointType const *const pi, PointType *const po)
 {
     // undistort point first
     pcl::PointXYZI un_point_tmp;
-    TransformToStart(pi, &un_point_tmp);
+    TransformToStart(pi, &un_point_tmp); // 先将点云去畸变
 
     Eigen::Vector3d un_point(un_point_tmp.x, un_point_tmp.y, un_point_tmp.z);
-    Eigen::Vector3d point_end = q_last_curr.inverse() * (un_point - t_last_curr);
+    Eigen::Vector3d point_end = q_last_curr.inverse() * (un_point - t_last_curr); // 再转换到下一帧的起始位置（或叫这一帧的末尾位置）
 
     po->x = point_end.x();
     po->y = point_end.y();
@@ -144,57 +148,71 @@ void TransformToEnd(PointType const *const pi, PointType *const po)
     po->intensity = int(pi->intensity);
 }
 
-//~ some Callback function to save data(5 types: sharp, lessSharp, flat, lessFlat, all) in queue.
-void laserCloudSharpHandler(const sensor_msgs::PointCloud2ConstPtr &cornerPointsSharp2){
+void laserCloudSharpHandler(const sensor_msgs::PointCloud2ConstPtr &cornerPointsSharp2)
+{
     mBuf.lock();
     cornerSharpBuf.push(cornerPointsSharp2);
     mBuf.unlock();
 }
 
-void laserCloudLessSharpHandler(const sensor_msgs::PointCloud2ConstPtr &cornerPointsLessSharp2){
+void laserCloudLessSharpHandler(const sensor_msgs::PointCloud2ConstPtr &cornerPointsLessSharp2)
+{
     mBuf.lock();
     cornerLessSharpBuf.push(cornerPointsLessSharp2);
     mBuf.unlock();
 }
 
-void laserCloudFlatHandler(const sensor_msgs::PointCloud2ConstPtr &surfPointsFlat2){
+void laserCloudFlatHandler(const sensor_msgs::PointCloud2ConstPtr &surfPointsFlat2)
+{
     mBuf.lock();
     surfFlatBuf.push(surfPointsFlat2);
     mBuf.unlock();
 }
 
-void laserCloudLessFlatHandler(const sensor_msgs::PointCloud2ConstPtr &surfPointsLessFlat2){
+void laserCloudLessFlatHandler(const sensor_msgs::PointCloud2ConstPtr &surfPointsLessFlat2)
+{
     mBuf.lock();
     surfLessFlatBuf.push(surfPointsLessFlat2);
     mBuf.unlock();
 }
 
 //receive all point cloud
-void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudFullRes2){
+void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudFullRes2)
+{
     mBuf.lock();
     fullPointsBuf.push(laserCloudFullRes2);
     mBuf.unlock();
 }
 
-
-int main(int argc, char **argv){
-
+int main(int argc, char **argv)
+{
     ros::init(argc, argv, "laserOdometry");
     ros::NodeHandle nh;
 
-    nh.param<int>("mapping_skip_frame", skipFrameNum, 2);   // if 1, do mapping 10 Hz, if 2, do mapping 5 Hz.
+    nh.param<int>("mapping_skip_frame", skipFrameNum, 2); // 前端计算的频率，launch默认设置的为1，表示10Hz
+
     printf("Mapping %d Hz \n", 10 / skipFrameNum);
 
+    // 订阅上一个节点发出的5个topic信息，分别放在各自的buffer里
     ros::Subscriber subCornerPointsSharp = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_sharp", 100, laserCloudSharpHandler);
+
     ros::Subscriber subCornerPointsLessSharp = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_less_sharp", 100, laserCloudLessSharpHandler);
+
     ros::Subscriber subSurfPointsFlat = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_flat", 100, laserCloudFlatHandler);
+
     ros::Subscriber subSurfPointsLessFlat = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_less_flat", 100, laserCloudLessFlatHandler);
-    ros::Subscriber subLaserCloudFullRes = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_cloud_2", 100, laserCloudFullResHandler);  //~ `velodyne_cloud_2 is origin pointCloud after deleting too near and NaN points.
+
+    ros::Subscriber subLaserCloudFullRes = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_cloud_2", 100, laserCloudFullResHandler);
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     ros::Publisher pubLaserCloudCornerLast = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_corner_last", 100);
+
     ros::Publisher pubLaserCloudSurfLast = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_surf_last", 100);
-    ros::Publisher pubLaserCloudFullRes = nh.advertise<sensor_msgs::PointCloud2>("/velodyne_cloud_3", 100); //~ cloud_3 is the same as input, unless undistort to scan_end-time
+
+    ros::Publisher pubLaserCloudFullRes = nh.advertise<sensor_msgs::PointCloud2>("/velodyne_cloud_3", 100);
+
     ros::Publisher pubLaserOdometry = nh.advertise<nav_msgs::Odometry>("/laser_odom_to_init", 100);
+
     ros::Publisher pubLaserPath = nh.advertise<nav_msgs::Path>("/laser_odom_path", 100);
 
     nav_msgs::Path laserPath;
@@ -202,23 +220,31 @@ int main(int argc, char **argv){
     int frameCount = 0;
     ros::Rate rate(100);
 
-    while (ros::ok()){
+    while (ros::ok()) // 重复执行该循环
+    {
         ros::spinOnce();
 
-        if (!cornerSharpBuf.empty() && !cornerLessSharpBuf.empty() && !surfFlatBuf.empty() && !surfLessFlatBuf.empty() && !fullPointsBuf.empty()){
-
+        if (!cornerSharpBuf.empty() && !cornerLessSharpBuf.empty() &&
+            !surfFlatBuf.empty() && !surfLessFlatBuf.empty() &&
+            !fullPointsBuf.empty())
+        {
             timeCornerPointsSharp = cornerSharpBuf.front()->header.stamp.toSec();
             timeCornerPointsLessSharp = cornerLessSharpBuf.front()->header.stamp.toSec();
             timeSurfPointsFlat = surfFlatBuf.front()->header.stamp.toSec();
             timeSurfPointsLessFlat = surfLessFlatBuf.front()->header.stamp.toSec();
             timeLaserCloudFullRes = fullPointsBuf.front()->header.stamp.toSec();
 
-            if (timeCornerPointsSharp != timeLaserCloudFullRes || timeCornerPointsLessSharp != timeLaserCloudFullRes || timeSurfPointsFlat != timeLaserCloudFullRes || timeSurfPointsLessFlat != timeLaserCloudFullRes){
+            if (timeCornerPointsSharp != timeLaserCloudFullRes ||
+                timeCornerPointsLessSharp != timeLaserCloudFullRes ||
+                timeSurfPointsFlat != timeLaserCloudFullRes ||
+                timeSurfPointsLessFlat != timeLaserCloudFullRes)
+            {
                 printf("unsync messeage!");
                 ROS_BREAK();
-            }
+            } // 判断消息同步
 
-            mBuf.lock();        //~ load data from all queues. 
+            // 从buffer里取数据，并将ros消息转成pcl点云格式
+            mBuf.lock();
             cornerPointsSharp->clear();
             pcl::fromROSMsg(*cornerSharpBuf.front(), *cornerPointsSharp);
             cornerSharpBuf.pop();
@@ -242,25 +268,33 @@ int main(int argc, char **argv){
 
             TicToc t_whole;
             // initializing
-            if (!systemInited){     //~ for the first time, no processing, just save points as lastPoints for following matching.
+            if (!systemInited) // 第一帧信息存下来作为lastframe，这样之后的信息才可以和上一帧匹配得到位姿
+            {
                 systemInited = true;
                 std::cout << "Initialization finished \n";
             }
-            else{
+            else
+            {
                 int cornerPointsSharpNum = cornerPointsSharp->points.size();
                 int surfPointsFlatNum = surfPointsFlat->points.size();
-                // ROS_WARN_STREAM("Sharp num: " << cornerPointsSharpNum << ", surf: " << surfPointsFlatNum);   //~ corner: 2*6*16=192, flat`=370
+
                 TicToc t_opt;
-                for (size_t opti_counter = 0; opti_counter < 2; ++opti_counter){    //~ optimize twice.
+                for (size_t opti_counter = 0; opti_counter < 2; ++opti_counter) // 循环2次进行计算
+                {
                     corner_correspondence = 0;
                     plane_correspondence = 0;
 
-                    //ceres::LossFunction *loss_function = NULL; TODO: study ceres again...
-                    ceres::LossFunction *loss_function = new ceres::HuberLoss(0.1);
-                    ceres::LocalParameterization *q_parameterization = new ceres::EigenQuaternionParameterization();
+                    // http://www.ceres-solver.org/nnls_modeling.html?highlight=loss#_CPPv2N5ceres12LossFunctionE
+                    //ceres::LossFunction *loss_function = NULL;
+                    ceres::LossFunction *loss_function = new ceres::HuberLoss(0.1); // 定义一个0.1阈值的huber核函数，优化时抑制离群点用
+                    // http://www.ceres-solver.org/nnls_modeling.html?highlight=eigenquaternionparameterization#_CPPv2N5ceres31EigenQuaternionParameterizationE
+                    // 其它有关ceres的内容可以自己去查官方文档进行学习和了解
+                    ceres::LocalParameterization *q_parameterization =
+                        new ceres::EigenQuaternionParameterization(); // 进行四元数的参数化
                     ceres::Problem::Options problem_options;
+
                     ceres::Problem problem(problem_options);
-                    problem.AddParameterBlock(para_q, 4, q_parameterization);
+                    problem.AddParameterBlock(para_q, 4, q_parameterization); // 设定优化参数的自变量，q_curr_last(x, y, z, w)和t_curr_last，四元数旋转和平移
                     problem.AddParameterBlock(para_t, 3);
 
                     pcl::PointXYZI pointSel;
@@ -269,132 +303,194 @@ int main(int argc, char **argv){
 
                     TicToc t_data;
                     // find correspondence for corner features
-                    for (int i = 0; i < cornerPointsSharpNum; ++i){
-                        TransformToStart(&(cornerPointsSharp->points[i]), &pointSel);
+                    for (int i = 0; i < cornerPointsSharpNum; ++i) // 所有的Edge Points
+                    {
+                        TransformToStart(&(cornerPointsSharp->points[i]), &pointSel); // 将激光点转换到这一帧起始时刻的坐标系下（根据时间线性插值粗略的去畸变）
+                        // 注意这里去畸变只是为了方便找最近点，后面传给cost_function的为原始点，在cost_function里根据优化来进行去畸变
+                        // 通过kd树找上一帧Edge Points里距离当前点最近的点，这里的Edge Points包括cornerPointsLessSharp和cornerPointsSharp
                         kdtreeCornerLast->nearestKSearch(pointSel, 1, pointSearchInd, pointSearchSqDis);
-                        int closestPointInd = -1, minPointInd2 = -1;
-                        if (pointSearchSqDis[0] < DISTANCE_SQ_THRESHOLD){
-                            closestPointInd = pointSearchInd[0];
-                            int closestPointScanID = int(laserCloudCornerLast->points[closestPointInd].intensity);
-                            double minPointSqDis2 = DISTANCE_SQ_THRESHOLD;
 
-                            // search in the direction of increasing scan line ~ then in decreasing line...
-                            for (int j = closestPointInd + 1; j < (int)laserCloudCornerLast->points.size(); ++j){  
-                                // if in the same scan line, continue
+                        int closestPointInd = -1, minPointInd2 = -1;
+                        if (pointSearchSqDis[0] < DISTANCE_SQ_THRESHOLD) // 如果最近点距离的平方小于25
+                        {
+                            closestPointInd = pointSearchInd[0]; // 最近点的index
+                            int closestPointScanID = int(laserCloudCornerLast->points[closestPointInd].intensity); // 最近点在scan第几层（intensity的整数部分）
+
+                            double minPointSqDis2 = DISTANCE_SQ_THRESHOLD;
+                            // 分别从正方向和反方向找到不在同一层的第二个最近的Edge Points，之后要根据这两个Edge Points拟合直线，点到直线距离作为误差函数
+                            // search in the direction of increasing scan line
+                            for (int j = closestPointInd + 1; j < (int)laserCloudCornerLast->points.size(); ++j)
+                            {
+                                // if in the same scan line, continue 要求不在同一层激光线束上第二个最近点
                                 if (int(laserCloudCornerLast->points[j].intensity) <= closestPointScanID)
                                     continue;
-                                // if not in nearby scans, end the loop
+
+                                // if not in nearby scans, end the loop 不要在太远的scan层
                                 if (int(laserCloudCornerLast->points[j].intensity) > (closestPointScanID + NEARBY_SCAN))
                                     break;
-                                double pointSqDis = (laserCloudCornerLast->points[j].x - pointSel.x) *(laserCloudCornerLast->points[j].x - pointSel.x)
-                                                    + (laserCloudCornerLast->points[j].y - pointSel.y) *(laserCloudCornerLast->points[j].y - pointSel.y)
-                                                    + (laserCloudCornerLast->points[j].z - pointSel.z) *(laserCloudCornerLast->points[j].z - pointSel.z);
-                                if (pointSqDis < minPointSqDis2){   // find nearer point
+
+                                double pointSqDis = (laserCloudCornerLast->points[j].x - pointSel.x) *
+                                                        (laserCloudCornerLast->points[j].x - pointSel.x) +
+                                                    (laserCloudCornerLast->points[j].y - pointSel.y) *
+                                                        (laserCloudCornerLast->points[j].y - pointSel.y) +
+                                                    (laserCloudCornerLast->points[j].z - pointSel.z) *
+                                                        (laserCloudCornerLast->points[j].z - pointSel.z);
+
+                                if (pointSqDis < minPointSqDis2)
+                                {
+                                    // find nearer point
                                     minPointSqDis2 = pointSqDis;
                                     minPointInd2 = j;
                                 }
                             }
 
                             // search in the direction of decreasing scan line
-                            for (int j = closestPointInd - 1; j >= 0; --j){
+                            for (int j = closestPointInd - 1; j >= 0; --j) // 跟上面一样，只不过这回从反方向遍历
+                            {
                                 // if in the same scan line, continue
                                 if (int(laserCloudCornerLast->points[j].intensity) >= closestPointScanID)
                                     continue;
+
                                 // if not in nearby scans, end the loop
                                 if (int(laserCloudCornerLast->points[j].intensity) < (closestPointScanID - NEARBY_SCAN))
                                     break;
-                                double pointSqDis = (laserCloudCornerLast->points[j].x - pointSel.x) *(laserCloudCornerLast->points[j].x - pointSel.x) 
-                                                    + (laserCloudCornerLast->points[j].y - pointSel.y) *(laserCloudCornerLast->points[j].y - pointSel.y) 
-                                                    + (laserCloudCornerLast->points[j].z - pointSel.z) *(laserCloudCornerLast->points[j].z - pointSel.z);
-                                if (pointSqDis < minPointSqDis2){   // find nearer point
+
+                                double pointSqDis = (laserCloudCornerLast->points[j].x - pointSel.x) *
+                                                        (laserCloudCornerLast->points[j].x - pointSel.x) +
+                                                    (laserCloudCornerLast->points[j].y - pointSel.y) *
+                                                        (laserCloudCornerLast->points[j].y - pointSel.y) +
+                                                    (laserCloudCornerLast->points[j].z - pointSel.z) *
+                                                        (laserCloudCornerLast->points[j].z - pointSel.z);
+
+                                if (pointSqDis < minPointSqDis2)
+                                {
+                                    // find nearer point
                                     minPointSqDis2 = pointSqDis;
                                     minPointInd2 = j;
                                 }
                             }
                         }
-
-                        if (minPointInd2 >= 0){ // both closestPointInd and minPointInd2 is valid
-                            Eigen::Vector3d curr_point(cornerPointsSharp->points[i].x, cornerPointsSharp->points[i].y, cornerPointsSharp->points[i].z);
-                            Eigen::Vector3d last_point_a(laserCloudCornerLast->points[closestPointInd].x, laserCloudCornerLast->points[closestPointInd].y, laserCloudCornerLast->points[closestPointInd].z);
-                            Eigen::Vector3d last_point_b(laserCloudCornerLast->points[minPointInd2].x, laserCloudCornerLast->points[minPointInd2].y, laserCloudCornerLast->points[minPointInd2].z);
+                        // 找到两个不在同一层上的Edge Points之后，计算点到这两个Edge Points拟合的直线上的距离，作为误差函数
+                        if (minPointInd2 >= 0) // both closestPointInd and minPointInd2 is valid
+                        {
+                            Eigen::Vector3d curr_point(cornerPointsSharp->points[i].x, // 为原始点，存在畸变，将在cost_function优化过程中进行去畸变
+                                                       cornerPointsSharp->points[i].y,
+                                                       cornerPointsSharp->points[i].z);
+                            Eigen::Vector3d last_point_a(laserCloudCornerLast->points[closestPointInd].x,
+                                                         laserCloudCornerLast->points[closestPointInd].y,
+                                                         laserCloudCornerLast->points[closestPointInd].z);
+                            Eigen::Vector3d last_point_b(laserCloudCornerLast->points[minPointInd2].x,
+                                                         laserCloudCornerLast->points[minPointInd2].y,
+                                                         laserCloudCornerLast->points[minPointInd2].z);
 
                             double s;
-                            if (DISTORTION)
+                            if (DISTORTION) // 如果激光点云没有做过去畸变，这里用s来计算需要插值的比例（时间）
                                 s = (cornerPointsSharp->points[i].intensity - int(cornerPointsSharp->points[i].intensity)) / SCAN_PERIOD;
                             else
                                 s = 1.0;
+                            // 在cost_function里定义误差函数和求导相关
                             ceres::CostFunction *cost_function = LidarEdgeFactor::Create(curr_point, last_point_a, last_point_b, s);
-                            problem.AddResidualBlock(cost_function, loss_function, para_q, para_t); //~ optimize q and t.
+                            // http://www.ceres-solver.org/nnls_modeling.html?highlight=addresidualblock#
+                            problem.AddResidualBlock(cost_function, loss_function, para_q, para_t);
                             corner_correspondence++;
                         }
                     }
 
                     // find correspondence for plane features
-                    for (int i = 0; i < surfPointsFlatNum; ++i){
+                    for (int i = 0; i < surfPointsFlatNum; ++i) // 所有的Planar Points
+                    {
+                        // 跟Edge Points处理类似，先根据这一帧的位姿增量进行粗略去畸变
                         TransformToStart(&(surfPointsFlat->points[i]), &pointSel);
                         kdtreeSurfLast->nearestKSearch(pointSel, 1, pointSearchInd, pointSearchSqDis);
+                        // 然后找到3个最近点，计算到这3个点拟合的平面的距离，作为误差函数
                         int closestPointInd = -1, minPointInd2 = -1, minPointInd3 = -1;
-                        if (pointSearchSqDis[0] < DISTANCE_SQ_THRESHOLD){
+                        if (pointSearchSqDis[0] < DISTANCE_SQ_THRESHOLD)
+                        {
                             closestPointInd = pointSearchInd[0];
+
                             // get closest point's scan ID
+                            // 根据kd树找到第一个最近点
                             int closestPointScanID = int(laserCloudSurfLast->points[closestPointInd].intensity);
                             double minPointSqDis2 = DISTANCE_SQ_THRESHOLD, minPointSqDis3 = DISTANCE_SQ_THRESHOLD;
 
                             // search in the direction of increasing scan line
-                            for (int j = closestPointInd + 1; j < (int)laserCloudSurfLast->points.size(); ++j){
+                            for (int j = closestPointInd + 1; j < (int)laserCloudSurfLast->points.size(); ++j)
+                            {
                                 // if not in nearby scans, end the loop
                                 if (int(laserCloudSurfLast->points[j].intensity) > (closestPointScanID + NEARBY_SCAN))
                                     break;
-                                double pointSqDis = (laserCloudSurfLast->points[j].x - pointSel.x) *(laserCloudSurfLast->points[j].x - pointSel.x)
-                                                    +(laserCloudSurfLast->points[j].y - pointSel.y) *(laserCloudSurfLast->points[j].y - pointSel.y)
-                                                    + (laserCloudSurfLast->points[j].z - pointSel.z) *(laserCloudSurfLast->points[j].z - pointSel.z);
 
-                                //~ select two points in 2 different scans.
-                                // if in the same or lower scan line
-                                if (int(laserCloudSurfLast->points[j].intensity) <= closestPointScanID && pointSqDis < minPointSqDis2){
+                                double pointSqDis = (laserCloudSurfLast->points[j].x - pointSel.x) *
+                                                        (laserCloudSurfLast->points[j].x - pointSel.x) +
+                                                    (laserCloudSurfLast->points[j].y - pointSel.y) *
+                                                        (laserCloudSurfLast->points[j].y - pointSel.y) +
+                                                    (laserCloudSurfLast->points[j].z - pointSel.z) *
+                                                        (laserCloudSurfLast->points[j].z - pointSel.z);
+
+                                // if in the same or lower scan line 其中一个次最近点需要在同一层或更底层
+                                if (int(laserCloudSurfLast->points[j].intensity) <= closestPointScanID && pointSqDis < minPointSqDis2)
+                                {
                                     minPointSqDis2 = pointSqDis;
                                     minPointInd2 = j;
                                 }
-                                // if in the higher scan line
-                                else if (int(laserCloudSurfLast->points[j].intensity) > closestPointScanID && pointSqDis < minPointSqDis3){
+                                // if in the higher scan line 另一个次最近点需要在更高层，这样选出来的3个点不容易共线，可以更好的拟合出一个平面
+                                else if (int(laserCloudSurfLast->points[j].intensity) > closestPointScanID && pointSqDis < minPointSqDis3)
+                                {
                                     minPointSqDis3 = pointSqDis;
                                     minPointInd3 = j;
                                 }
                             }
 
                             // search in the direction of decreasing scan line
-                            for (int j = closestPointInd - 1; j >= 0; --j){
+                            for (int j = closestPointInd - 1; j >= 0; --j)
+                            {
                                 // if not in nearby scans, end the loop
                                 if (int(laserCloudSurfLast->points[j].intensity) < (closestPointScanID - NEARBY_SCAN))
                                     break;
-                                double pointSqDis = (laserCloudSurfLast->points[j].x - pointSel.x) *(laserCloudSurfLast->points[j].x - pointSel.x)
-                                                    + (laserCloudSurfLast->points[j].y - pointSel.y) *(laserCloudSurfLast->points[j].y - pointSel.y)
-                                                    + (laserCloudSurfLast->points[j].z - pointSel.z) *(laserCloudSurfLast->points[j].z - pointSel.z);
+
+                                double pointSqDis = (laserCloudSurfLast->points[j].x - pointSel.x) *
+                                                        (laserCloudSurfLast->points[j].x - pointSel.x) +
+                                                    (laserCloudSurfLast->points[j].y - pointSel.y) *
+                                                        (laserCloudSurfLast->points[j].y - pointSel.y) +
+                                                    (laserCloudSurfLast->points[j].z - pointSel.z) *
+                                                        (laserCloudSurfLast->points[j].z - pointSel.z);
 
                                 // if in the same or higher scan line
-                                if (int(laserCloudSurfLast->points[j].intensity) >= closestPointScanID && pointSqDis < minPointSqDis2){
+                                if (int(laserCloudSurfLast->points[j].intensity) >= closestPointScanID && pointSqDis < minPointSqDis2)
+                                {
                                     minPointSqDis2 = pointSqDis;
                                     minPointInd2 = j;
                                 }
-                                // if in the lower scan line
-                                else if (int(laserCloudSurfLast->points[j].intensity) < closestPointScanID && pointSqDis < minPointSqDis3){
+                                else if (int(laserCloudSurfLast->points[j].intensity) < closestPointScanID && pointSqDis < minPointSqDis3)
+                                {
                                     // find nearer point
                                     minPointSqDis3 = pointSqDis;
                                     minPointInd3 = j;
                                 }
                             }
 
-                            if (minPointInd2 >= 0 && minPointInd3 >= 0) {
-                                Eigen::Vector3d curr_point(surfPointsFlat->points[i].x, surfPointsFlat->points[i].y, surfPointsFlat->points[i].z);
-                                Eigen::Vector3d last_point_a(laserCloudSurfLast->points[closestPointInd].x, laserCloudSurfLast->points[closestPointInd].y, laserCloudSurfLast->points[closestPointInd].z);
-                                Eigen::Vector3d last_point_b(laserCloudSurfLast->points[minPointInd2].x, laserCloudSurfLast->points[minPointInd2].y, laserCloudSurfLast->points[minPointInd2].z);
-                                Eigen::Vector3d last_point_c(laserCloudSurfLast->points[minPointInd3].x, laserCloudSurfLast->points[minPointInd3].y, laserCloudSurfLast->points[minPointInd3].z);
-                                
+                            if (minPointInd2 >= 0 && minPointInd3 >= 0) // 找到了3个点，构造点到平面距离的误差函数
+                            {
+
+                                Eigen::Vector3d curr_point(surfPointsFlat->points[i].x,
+                                                            surfPointsFlat->points[i].y,
+                                                            surfPointsFlat->points[i].z);
+                                Eigen::Vector3d last_point_a(laserCloudSurfLast->points[closestPointInd].x,
+                                                                laserCloudSurfLast->points[closestPointInd].y,
+                                                                laserCloudSurfLast->points[closestPointInd].z);
+                                Eigen::Vector3d last_point_b(laserCloudSurfLast->points[minPointInd2].x,
+                                                                laserCloudSurfLast->points[minPointInd2].y,
+                                                                laserCloudSurfLast->points[minPointInd2].z);
+                                Eigen::Vector3d last_point_c(laserCloudSurfLast->points[minPointInd3].x,
+                                                                laserCloudSurfLast->points[minPointInd3].y,
+                                                                laserCloudSurfLast->points[minPointInd3].z);
+
                                 double s;
-                                if (DISTORTION)
+                                if (DISTORTION) // 如果激光点云没有做过去畸变，这里用s来计算需要插值的比例（时间）
                                     s = (surfPointsFlat->points[i].intensity - int(surfPointsFlat->points[i].intensity)) / SCAN_PERIOD;
                                 else
                                     s = 1.0;
+                                // curr_point到a,b,c三点组成平面的距离的cost_function
                                 ceres::CostFunction *cost_function = LidarPlaneFactor::Create(curr_point, last_point_a, last_point_b, last_point_c, s);
                                 problem.AddResidualBlock(cost_function, loss_function, para_q, para_t);
                                 plane_correspondence++;
@@ -404,13 +500,17 @@ int main(int argc, char **argv){
 
                     //printf("coner_correspondance %d, plane_correspondence %d \n", corner_correspondence, plane_correspondence);
                     printf("data association time %f ms \n", t_data.toc());
-                    if ((corner_correspondence + plane_correspondence) < 10)
+
+                    if ((corner_correspondence + plane_correspondence) < 10) // 提示找到的匹配点数量过少
+                    {
                         printf("less correspondence! *************************************************\n");
-                    
+                    }
+
                     TicToc t_solver;
+                    // ceres进行优化求解，最后求解出结果之后还要再进行一次大循环，根据上一轮的结果重新去畸变，找各自对应点，再求解
                     ceres::Solver::Options options;
                     options.linear_solver_type = ceres::DENSE_QR;
-                    options.max_num_iterations = 4;
+                    options.max_num_iterations = 4; // 在非线性优化求解中最多进行几次迭代
                     options.minimizer_progress_to_stdout = false;
                     ceres::Solver::Summary summary;
                     ceres::Solve(options, &problem, &summary);
@@ -418,11 +518,13 @@ int main(int argc, char **argv){
                 }
                 printf("optimization twice time %f \n", t_opt.toc());
 
-                t_w_curr = t_w_curr + q_w_curr * t_last_curr;
-                q_w_curr = q_w_curr * q_last_curr;
+                // 更新激光雷达在世界坐标系下的位姿
+                t_w_curr = t_w_curr + q_w_curr * t_last_curr; // 相当于是t_w_curr = t_w_last + q_w_last * t_last_curr
+                q_w_curr = q_w_curr * q_last_curr; // 相当于是q_w_curr = q_w_last * q_last_curr
             }
 
             TicToc t_pub;
+
             // publish odometry
             nav_msgs::Odometry laserOdometry;
             laserOdometry.header.frame_id = "/camera_init";
@@ -435,7 +537,7 @@ int main(int argc, char **argv){
             laserOdometry.pose.pose.position.x = t_w_curr.x();
             laserOdometry.pose.pose.position.y = t_w_curr.y();
             laserOdometry.pose.pose.position.z = t_w_curr.z();
-            pubLaserOdometry.publish(laserOdometry);
+            pubLaserOdometry.publish(laserOdometry); // 发布激光里程计的位姿
 
             geometry_msgs::PoseStamped laserPose;
             laserPose.header = laserOdometry.header;
@@ -443,27 +545,34 @@ int main(int argc, char **argv){
             laserPath.header.stamp = laserOdometry.header.stamp;
             laserPath.poses.push_back(laserPose);
             laserPath.header.frame_id = "/camera_init";
-            pubLaserPath.publish(laserPath);
+            pubLaserPath.publish(laserPath); // 发布激光里程计的路径
 
             // transform corner features and plane features to the scan end point
-            if (0){
+            if (0) // 如果点云存在畸变，则将特征点转换到下一帧的开始时间。相当于是对上一帧特征点进行了去畸变处理，方便跟下一帧进行匹配
+            {
                 int cornerPointsLessSharpNum = cornerPointsLessSharp->points.size();
                 for (int i = 0; i < cornerPointsLessSharpNum; i++)
+                {
                     TransformToEnd(&cornerPointsLessSharp->points[i], &cornerPointsLessSharp->points[i]);
+                }
 
                 int surfPointsLessFlatNum = surfPointsLessFlat->points.size();
                 for (int i = 0; i < surfPointsLessFlatNum; i++)
+                {
                     TransformToEnd(&surfPointsLessFlat->points[i], &surfPointsLessFlat->points[i]);
+                }
 
                 int laserCloudFullResNum = laserCloudFullRes->points.size();
                 for (int i = 0; i < laserCloudFullResNum; i++)
+                {
                     TransformToEnd(&laserCloudFullRes->points[i], &laserCloudFullRes->points[i]);
+                }
             }
 
-            //~ label current corner/flat Points as "last", to construct for next loop's matching.
+            // 把点云内容赋给Last，方便下一轮和下一帧进行匹配
             pcl::PointCloud<PointType>::Ptr laserCloudTemp = cornerPointsLessSharp;
-            cornerPointsLessSharp = laserCloudCornerLast;   //~ in next loop, `cornerPointsLessSharp is cleared before reading the loop, which means last-last Points are deleted.
-            laserCloudCornerLast = laserCloudTemp;          //~ current point are labeled as "last"
+            cornerPointsLessSharp = laserCloudCornerLast;
+            laserCloudCornerLast = laserCloudTemp;
 
             laserCloudTemp = surfPointsLessFlat;
             surfPointsLessFlat = laserCloudSurfLast;
@@ -474,11 +583,14 @@ int main(int argc, char **argv){
 
             // std::cout << "the size of corner last is " << laserCloudCornerLastNum << ", and the size of surf last is " << laserCloudSurfLastNum << '\n';
 
-            kdtreeCornerLast->setInputCloud(laserCloudCornerLast);  //~ construct kd-tree for next loop's KNN search.
+            kdtreeCornerLast->setInputCloud(laserCloudCornerLast); // 构建kd树，用来找最近点用
             kdtreeSurfLast->setInputCloud(laserCloudSurfLast);
 
-            if (frameCount % skipFrameNum == 0){
+            if (frameCount % skipFrameNum == 0) // 控制输出的频率，由此决定mapping线程的频率
+            {
                 frameCount = 0;
+
+                // 发送去过畸变的lessSharp（包含Sharp）和lessFlat（包含Flat）特征点云与原始点云
                 sensor_msgs::PointCloud2 laserCloudCornerLast2;
                 pcl::toROSMsg(*laserCloudCornerLast, laserCloudCornerLast2);
                 laserCloudCornerLast2.header.stamp = ros::Time().fromSec(timeSurfPointsLessFlat);
